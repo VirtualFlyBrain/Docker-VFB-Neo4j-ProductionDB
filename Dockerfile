@@ -4,10 +4,8 @@ ADD http://virtualflybrain.org/public_resources/productionDB.tar /opt/
 
 RUN tar -xzvf /opt/productionDB.tar && \
 mv disk/data/neo4j/.ols/neo4j /data/ && \
-sed -i s/graph.db/neo4j/ /var/lib/neo4j/conf/neo4j-server.properties
-
-RUN sed -i s/dbms.security.auth_enabled=true/dbms.security.auth_enabled=false/ /var/lib/neo4j/conf/neo4j-server.properties && \
+sed -i s/graph.db/neo4j/ /var/lib/neo4j/conf/neo4j-server.properties && \
+chmod -R 777 /data/neo4j && \
+sed -i s/dbms.security.auth_enabled=true/dbms.security.auth_enabled=false/ /var/lib/neo4j/conf/neo4j-server.properties && \
 echo 'read_only=true' >> /var/lib/neo4j/conf/neo4j-server.properties
-
-RUN chmod -R 777 /data/neo4j
 

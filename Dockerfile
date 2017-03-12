@@ -9,3 +9,5 @@ sed -i s/graph.db/neo4j/ /var/lib/neo4j/conf/neo4j-server.properties
 RUN sed -i s/dbms.security.auth_enabled=true/dbms.security.auth_enabled=false/ /var/lib/neo4j/conf/neo4j-server.properties && \
 echo 'read_only=true' >> /var/lib/neo4j/conf/neo4j-server.properties
 
+RUN chmod -R 777 /var/lib/neo4j/data/databases/neo4j
+

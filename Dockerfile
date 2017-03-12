@@ -4,5 +4,4 @@ ADD http://virtualflybrain.org/public_resources/productionDB.tar /opt/
 
 RUN tar -xzvf /opt/productionDB.tar && \
 mv disk/data/neo4j/.ols/neo4j /var/lib/neo4j/data/databases/ && \
-rm /var/lib/neo4j/data/databases/graph.db && \
 sed -i s/graph.db/neo4j/ /var/lib/neo4j/conf/neo4j-server.properties

@@ -1,0 +1,9 @@
+services:
+  - docker
+  
+script:
+  - docker build -t test-image:test .
+  - docker run -d --name test -p 7474:7474 -p 7473:7473 -p 7687:7687 test-image:test
+  - sleep 2m
+  - docker logs test
+  - curl -sSf http://localhost:7474/browser/

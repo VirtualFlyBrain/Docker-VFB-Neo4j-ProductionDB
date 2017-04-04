@@ -1,3 +1,6 @@
+[![Build Status](https://travis-ci.org/VirtualFlyBrain/Docker-VFB-Neo4j-ProductionDB.svg?branch=master)](https://travis-ci.org/VirtualFlyBrain/Docker-VFB-Neo4j-ProductionDB)
+
+
 Docker neo4j server with VFB production DB loaded 
 
 To run:

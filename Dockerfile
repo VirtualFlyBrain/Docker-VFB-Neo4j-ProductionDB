@@ -12,4 +12,7 @@ COPY start.sh /opt/VFB/
 
 RUN chmod +x /opt/VFB/start.sh
 
+RUN sed -i s/read_only=.*/read_only=false/ ${NEOSERCONF} && \
+exec /docker-entrypoint.sh neo4j &
+
 ENTRYPOINT ["/opt/VFB/start.sh"]

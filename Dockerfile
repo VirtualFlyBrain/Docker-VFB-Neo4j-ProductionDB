@@ -1,4 +1,4 @@
-FROM virtualflybrain/docker-vfb-neo4j:2.3-enterprise 
+FROM virtualflybrain/docker-vfb-neo4j:2.3-enterprise.apoc
 
 ADD http://data.virtualflybrain.org/archive/productionDB.tar.gz /opt/
 

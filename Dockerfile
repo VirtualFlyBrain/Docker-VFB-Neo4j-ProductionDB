@@ -1,15 +1,29 @@
-FROM virtualflybrain/docker-vfb-neo4j:2.3-enterprise 
+FROM virtualflybrain/docker-vfb-neo4j:enterprise
 
-ADD http://data.virtualflybrain.org/archive/productionDB.tar.gz /opt/
+ENV NEOREADONLY=true
 
-RUN cd / && tar -xzvf /opt/productionDB.tar.gz && \
-sed -i 's|=data\/graph\.db|=\/disk\/data\/neo4j\/\.ols\/neo4j|' ${NEOSERCONF} && \
-chmod -R 777 /disk
+ENV BACKUPFILE="VFB-PDB"
 
-VOLUME /disk
+ENV NEO4J_dbms_memory_heap_maxSize=4G
+ENV NEO4J_dbms_memory_heap_initial__size=1G
+ENV NEO4J_dbms_read__only=true
+ENV NEO4J_dbms_security_procedures_unrestricted=ebi.spot.neo4j2owl.*,apoc.*
 
-COPY start.sh /opt/VFB/
+RUN apk update && apk add tar gzip curl wget
 
-RUN chmod +x /opt/VFB/start.sh
+COPY loadDB.sh /opt/VFB/
+ADD neo4j2owl.jar /var/lib/neo4j/plugins/neo4j2owl.jar 
 
-ENTRYPOINT ["/opt/VFB/start.sh"]
+###### APOC TOOLS ######
+ENV APOC_VERSION=3.3.0.1
+ARG APOC_JAR=https://github.com/neo4j-contrib/neo4j-apoc-procedures/releases/download/$APOC_VERSION/apoc-$APOC_VERSION-all.jar
+ENV APOC_JAR ${APOC_JAR}
+RUN wget $APOC_JAR -O /var/lib/neo4j/plugins/apoc.jar
+
+RUN mkdir -p /opt/VFB/backup/ 
+
+RUN chmod -R 777 /opt/VFB/backup/ 
+
+RUN chmod +x /opt/VFB/loadDB.sh
+
+ENTRYPOINT ["/opt/VFB/loadDB.sh"]

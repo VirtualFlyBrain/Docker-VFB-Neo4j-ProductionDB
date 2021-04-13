@@ -15,7 +15,7 @@ RUN apt-get -y update && apt-get -y install tar gzip curl wget zip unzip
 COPY loadDB.sh /opt/VFB/
 
 ###### APOC TOOLS ######
-ENV APOC_VERSION=4.2.0.1
+ENV APOC_VERSION=4.2.0.2
 ARG APOC_JAR=https://github.com/neo4j-contrib/neo4j-apoc-procedures/releases/download/$APOC_VERSION/apoc-$APOC_VERSION-all.jar
 ENV APOC_JAR ${APOC_JAR}
 RUN wget $APOC_JAR -O /var/lib/neo4j/plugins/apoc.jar

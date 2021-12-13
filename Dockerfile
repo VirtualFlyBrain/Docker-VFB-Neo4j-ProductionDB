@@ -1,5 +1,9 @@
 FROM virtualflybrain/docker-vfb-neo4j:4.2-enterprise
 
+# Fix for log4j vulnerability
+ENV LOG4J_FORMAT_MSG_NO_LOOKUPS=true
+ENV NEO4J_dbms_jvm_additional="-Dlog4j2.formatMsgNoLookups=true -Dlog4j2.disable.jmx=true"
+
 ENV NEOREADONLY=true
 
 ENV BACKUPFILE="VFB-PDB-v4"

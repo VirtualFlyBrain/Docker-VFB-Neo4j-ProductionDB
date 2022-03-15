@@ -11,7 +11,7 @@ if [ -n "${BACKUPFILE}" ]; then
     cd /opt/VFB/backup/
     rm /opt/VFB/backup/${BACKUPFILE}.tar.gz
     wget http://data.virtualflybrain.org/archive/${BACKUPFILE}.tar.gz 
-    if [ ! -e ${BACKUPFILE}.tar.gz ]; then exit 1;
+    if [ ! -e ${BACKUPFILE}.tar.gz ]; then exit 1; fi
     tar -xzvf ${BACKUPFILE}.tar.gz
     mkdir -p /var/lib/neo4j/data/databases/
     neo4j-admin restore --from /opt/VFB/backup/neo4j --force

@@ -24,4 +24,7 @@ echo -e '\nSTARTING VFB DB SERVER\n' >> /var/lib/neo4j/logs/query.log
 
 #Output the query log to docker log:
 tail -f /var/lib/neo4j/logs/query.log >/proc/1/fd/1 &
+
+#TODO check for "Error upgrading database."
+
 exec /docker-entrypoint.sh neo4j

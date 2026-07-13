@@ -27,4 +27,9 @@ tail -f /var/lib/neo4j/logs/query.log >/proc/1/fd/1 &
 
 #TODO check for "Error upgrading database."
 
+# (Re)build the Circuit Browser per-connectome GDS projections once Neo4j is
+# accepting queries. GDS projections are in-memory only, so this runs on every
+# start (after the DB restore above). Backgrounded so it does not block Neo4j.
+/opt/VFB/gds_projections.sh >> /var/lib/neo4j/logs/gds_projections.log 2>&1 &
+
 exec /docker-entrypoint.sh neo4j

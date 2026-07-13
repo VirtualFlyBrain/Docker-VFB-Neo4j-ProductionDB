@@ -17,6 +17,7 @@ ENV NEO4J_dbms_security_procedures_unrestricted=ebi.spot.neo4j2owl.*,apoc.*,gds.
 RUN apt-get -y update && apt-get -y install tar gzip curl wget zip unzip
 
 COPY loadDB.sh /opt/VFB/
+COPY gds_projections.sh /opt/VFB/
 
 ###### APOC TOOLS ######
 ENV APOC_VERSION=4.2.0.2
@@ -35,5 +36,6 @@ RUN mkdir -p /opt/VFB/backup/
 RUN chmod -R 777 /opt/VFB/backup/ 
 
 RUN chmod +x /opt/VFB/loadDB.sh
+RUN chmod +x /opt/VFB/gds_projections.sh
 
 ENTRYPOINT ["/opt/VFB/loadDB.sh"]

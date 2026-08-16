@@ -2,7 +2,11 @@ FROM virtualflybrain/docker-vfb-neo4j:4.2-enterprise
 
 # Fix for log4j vulnerability
 ENV LOG4J_FORMAT_MSG_NO_LOOKUPS=true
-ENV NEO4J_dbms_jvm_additional="-Dlog4j2.formatMsgNoLookups=true -Dlog4j2.disable.jmx=true"
+# Stop the JVM the moment the heap is exhausted, rather than letting it thrash
+# indefinitely in GC while still accepting connections. The entrypoint execs
+# `neo4j console`, so the JVM is the container's foreground process and its
+# exit stops the container, letting the orchestrator restart it cleanly.
+ENV NEO4J_dbms_jvm_additional="-Dlog4j2.formatMsgNoLookups=true -Dlog4j2.disable.jmx=true -XX:+ExitOnOutOfMemoryError"
 
 ENV NEOREADONLY=true
 

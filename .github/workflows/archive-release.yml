@@ -3,18 +3,27 @@ name: Archive release to Zenodo
 # When a release is published here, capture the knowledge graph exactly as it is
 # being served at that moment and deposit it to Zenodo with a DOI.
 #
-# This removes the guesswork in the historical record. Until now the only dated
-# copies were the `previous-*` files in the Jenkins workspace, which are stamped
-# with the date they were DISPLACED, not the date their content went live — so
-# reconstructing which graph belongs to which release means reasoning backwards
-# through the rotation. From this release onward the mapping is recorded at the
-# moment it is true.
+# How this is meant to be used:
+#   1. Jenkins publishes the PDB and OWL to the public paths below.
+#   2. Once both are live, cut a release here, tagged with that day's date.
+#   3. This job pulls whatever is currently latest at those paths and deposits it.
+#
+# So the release tag says WHEN the release was made, and the deposit says WHAT was
+# in it. That separation is the point. Until now the only dated copies were the
+# `previous-*` files in the Jenkins workspace, which are stamped with the date they
+# were DISPLACED, not the date their content went live — so working out which graph
+# belongs to which release meant reasoning backwards through the rotation. From this
+# release onward the mapping is recorded at the moment it is true, with checksums.
 #
 # Sources (as used by the images this release builds):
 #   PDB  http://data.virtualflybrain.org/archive/VFB-PDB-v4.tar.gz
 #        — the file loadDB.sh fetches (BACKUPFILE=VFB-PDB-v4), ~5.6 GB
 #   OWL  http://VirtualFlyBrain.org/data/VFB/OWL/owlery-live.owl
 #        — OWLURL in owlery-vfb:timeout, ~6.6 GB
+#
+# The job asserts both files were published BEFORE the release, and fails if either
+# is newer. A file newer than the release means Jenkins rotated mid-run, and the
+# deposit would not be the graph the release was cut for.
 #
 # Requires:
 #   secrets.ZENODO_TOKEN   Zenodo personal access token, scopes: deposit:write deposit:actions
@@ -67,19 +76,45 @@ jobs:
             echo "::warning::Less than 8 GB free — a standard runner may not fit the OWL file."
           fi
 
-      - name: Record what is being archived
+      - name: Record what is being archived, and check it predates the release
         id: probe
+        env:
+          RELEASED_AT: ${{ github.event.release.published_at }}
         run: |
           set -euo pipefail
-          for pair in "PDB:$PDB_URL" "OWL:$OWL_URL"; do
-            key="${pair%%:*}"; url="${pair#*:}"
+          # sources.tsv: name <TAB> url <TAB> bytes <TAB> last-modified
+          : > sources.tsv
+          for pair in "VFB-PDB-v4.tar.gz|$PDB_URL" "owlery-live.owl|$OWL_URL"; do
+            name="${pair%%|*}"; url="${pair#*|}"
             hdr=$(curl -sIL --max-time 60 "$url")
             len=$(printf '%s' "$hdr" | grep -i '^content-length:' | tail -1 | tr -dc '0-9')
-            mod=$(printf '%s' "$hdr" | grep -i '^last-modified:' | tail -1 | cut -d' ' -f2-)
-            echo "${key}_len=$len"  >> "$GITHUB_OUTPUT"
-            echo "${key}_mod=$mod"  >> "$GITHUB_OUTPUT"
-            echo "$key: $len bytes, last modified $mod"
+            mod=$(printf '%s' "$hdr" | grep -i '^last-modified:' | tail -1 | cut -d' ' -f2- | tr -d '\r')
+            if [ -z "$len" ] || [ -z "$mod" ]; then
+              echo "::error::$url did not return both Content-Length and Last-Modified"; exit 1
+            fi
+            printf '%s\t%s\t%s\t%s\n' "$name" "$url" "$len" "$mod" >> sources.tsv
+            echo "$name: $len bytes, last modified $mod"
           done
+
+          # Both files must already have been published when the release was cut.
+          if [ -n "${RELEASED_AT:-}" ]; then
+            rel_epoch=$(date -u -d "$RELEASED_AT" +%s)
+            fail=0
+            while IFS=$'\t' read -r name url len mod; do
+              f_epoch=$(date -u -d "$mod" +%s)
+              if [ "$f_epoch" -gt "$rel_epoch" ]; then
+                echo "::error::$name was modified at $mod, after the release was published at $RELEASED_AT."
+                echo "::error::Jenkins rotated it mid-run; this deposit would not be the graph this release was cut for."
+                fail=1
+              else
+                age_d=$(( (rel_epoch - f_epoch) / 86400 ))
+                echo "$name predates the release by ${age_d} day(s) — OK"
+              fi
+            done < sources.tsv
+            [ "$fail" -eq 0 ] || exit 1
+          else
+            echo "::notice::Manual run — skipping the predates-the-release check."
+          fi
 
       - name: Open a Zenodo version
         if: ${{ !inputs.dry_run }}
@@ -124,22 +159,34 @@ jobs:
             echo "captured $(date -u +%Y-%m-%dT%H:%M:%SZ) by ${{ github.workflow }} run ${{ github.run_id }}"
             echo "source repo commit ${{ github.sha }}"
             echo
+            echo "The release tag is the date the release was cut. The dates below are"
+            echo "when each file was actually published, which is what this deposit contains."
+            echo
           } >> manifest.txt
           # one at a time so peak disk stays near the size of the larger file
-          for pair in "VFB-PDB-v4.tar.gz:$PDB_URL" "owlery-live.owl:$OWL_URL"; do
-            name="${pair%%:*}"; url="${pair#*:}"
+          while IFS=$'\t' read -r name url declared_len mod; do
             echo "::group::$name"
             curl -fL --retry 5 --retry-delay 10 --retry-all-errors \
                  --max-time 7200 -o "$name" "$url"
             sum=$(sha256sum "$name" | cut -d' ' -f1)
             size=$(stat -c%s "$name")
-            printf '%s  %s  %s bytes  from %s\n' "$sum" "$name" "$size" "$url" >> manifest.txt
+            if [ "$size" != "$declared_len" ]; then
+              echo "::error::$name is $size bytes but the server advertised $declared_len — truncated or rotated mid-download."
+              exit 1
+            fi
+            {
+              echo "$name"
+              echo "  sha256         $sum"
+              echo "  size           $size bytes"
+              echo "  published      $mod"
+              echo "  source         $url"
+            } >> manifest.txt
             curl -fT "$name" "$BUCKET/$name?access_token=$TOKEN" -o /dev/null \
               --retry 3 --retry-delay 30 --max-time 7200
             rm -f "$name"
             echo "uploaded and removed $name"
             echo "::endgroup::"
-          done
+          done < sources.tsv
           curl -fT manifest.txt "$BUCKET/manifest.txt?access_token=$TOKEN" -o /dev/null
 
       - name: Describe and publish the deposit

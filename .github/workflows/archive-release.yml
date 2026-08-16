@@ -189,7 +189,7 @@ jobs:
             if [ "${DRY:-false}" = "true" ]; then
               echo "dry run — not uploading $name"
             else
-              curl -fT "$name" "$BUCKET/$name?access_token=$TOKEN" -o /dev/null --retry 3 --retry-delay 30 --max-time 3600
+              curl -fT "$name" -H "Authorization: Bearer $TOKEN" "$BUCKET/$name" -o /dev/null --retry 3 --retry-delay 30 --max-time 3600
               echo "uploaded $name"
             fi
             rm -f "$name"
@@ -211,7 +211,7 @@ jobs:
           } >> manifest.txt
 
           echo "::group::manifest"; cat manifest.txt; echo "::endgroup::"
-          [ "${DRY:-false}" = "true" ] || curl -fT manifest.txt "$BUCKET/manifest.txt?access_token=$TOKEN" -o /dev/null
+          [ "${DRY:-false}" = "true" ] || curl -fT manifest.txt -H "Authorization: Bearer $TOKEN" "$BUCKET/manifest.txt" -o /dev/null
 
       - name: Describe and publish the deposit
         if: ${{ !inputs.dry_run }}

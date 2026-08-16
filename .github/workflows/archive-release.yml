@@ -145,12 +145,15 @@ jobs:
           echo "bucket=$bucket" >> "$GITHUB_OUTPUT"
           echo "Deposition $id"
 
+      # Runs on a dry run too: downloading and checksumming is the part worth
+      # rehearsing, since it is where 12 GB and two hours go. Only the upload
+      # and the publish are skipped.
       - name: Fetch, checksum and upload each file
-        if: ${{ !inputs.dry_run }}
         env:
           TOKEN: ${{ secrets.ZENODO_TOKEN }}
           BUCKET: ${{ steps.dep.outputs.bucket }}
           TAG: ${{ steps.tag.outputs.tag }}
+          DRY: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           : > manifest.txt
@@ -181,13 +184,20 @@ jobs:
               echo "  published      $mod"
               echo "  source         $url"
             } >> manifest.txt
-            curl -fT "$name" "$BUCKET/$name?access_token=$TOKEN" -o /dev/null \
-              --retry 3 --retry-delay 30 --max-time 7200
+            if [ "${DRY:-false}" = "true" ]; then
+              echo "dry run — not uploading $name"
+            else
+              curl -fT "$name" "$BUCKET/$name?access_token=$TOKEN" -o /dev/null \
+                --retry 3 --retry-delay 30 --max-time 7200
+              echo "uploaded $name"
+            fi
             rm -f "$name"
-            echo "uploaded and removed $name"
             echo "::endgroup::"
           done < sources.tsv
-          curl -fT manifest.txt "$BUCKET/manifest.txt?access_token=$TOKEN" -o /dev/null
+          echo "::group::manifest"; cat manifest.txt; echo "::endgroup::"
+          if [ "${DRY:-false}" != "true" ]; then
+            curl -fT manifest.txt "$BUCKET/manifest.txt?access_token=$TOKEN" -o /dev/null
+          fi
 
       - name: Describe and publish the deposit
         if: ${{ !inputs.dry_run }}

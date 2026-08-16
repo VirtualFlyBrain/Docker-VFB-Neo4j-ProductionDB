@@ -28,11 +28,15 @@ name: Archive release to Zenodo
 # by partial pipeline deployments between releases, so they are build state, not
 # release state, and this job must never read them.
 #
-# The job runs on `release: published`, so it reads those two paths while they
-# still hold the release that was just cut. The predates-the-release check below
-# is what makes that safe: if the pipeline promoted a new build between the
-# release being published and this job running, the file will be newer than the
-# release and the job fails rather than depositing the wrong generation.
+# Cutting the release is the LAST step: the PDB and OWL are already promoted and
+# settled before the tag exists, so when this job runs on `release: published`
+# those two paths hold this release by construction. There is no race to win.
+#
+# The predates-the-release check below is therefore not guarding the normal case.
+# It is an assertion that the normal case held — a file dated after the release
+# means something was promoted out of order, or a later pipeline run overtook the
+# job, and the deposit would be a different graph from the one released. Cheap to
+# check, and it turns a silent wrong answer into a failed run.
 #
 # Both go in whole. The production database in particular CANNOT be rebuilt from
 # the OWL dumps: pdb.owl is only part of what ends up in the graph — the

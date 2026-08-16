@@ -1,34 +1,49 @@
 name: Archive release to Zenodo
 
-# When a release is published here, capture the knowledge graph exactly as it is
-# being served at that moment and deposit it to Zenodo with a DOI.
+# When a release is published here, deposit the knowledge graph to Zenodo with a
+# DOI, as a new version of one long-lived record.
 #
 # How this is meant to be used:
-#   1. Jenkins publishes the PDB and OWL to the public paths below.
-#   2. Once both are live, cut a release here, tagged with that day's date.
-#   3. This job pulls whatever is currently latest at those paths and deposits it.
+#   1. Jenkins builds the dumps and promotes them to the public paths.
+#   2. Once they are live, cut a release here, tagged with that day's date.
+#   3. This job deposits the build products and records what was being served.
 #
-# So the release tag says WHEN the release was made, and the deposit says WHAT was
-# in it. That separation is the point. Until now the only dated copies were the
-# `previous-*` files in the Jenkins workspace, which are stamped with the date they
-# were DISPLACED, not the date their content went live — so working out which graph
-# belongs to which release meant reasoning backwards through the rotation. From this
-# release onward the mapping is recorded at the moment it is true, with checksums.
+# So the release tag says WHEN the release was cut, and the deposit says WHAT
+# was in it. Until now the only dated copies were the `previous-*` files in the
+# Jenkins workspace, stamped with the date they were DISPLACED rather than the
+# date their content went live, so working out which graph belonged to which
+# release meant reasoning backwards through the rotation.
 #
-# Sources (as used by the images this release builds):
-#   PDB  http://data.virtualflybrain.org/archive/VFB-PDB-v4.tar.gz
-#        — the file loadDB.sh fetches (BACKUPFILE=VFB-PDB-v4), ~5.6 GB
-#   OWL  http://VirtualFlyBrain.org/data/VFB/OWL/owlery-live.owl
-#        — OWLURL in owlery-vfb:timeout, ~6.6 GB
+# ---------------------------------------------------------------------------
+# WHAT IS DEPOSITED, AND WHY NOT THE NEO4J TARBALL
 #
-# The job asserts both files were published BEFORE the release, and fails if either
-# is newer. A file newer than the release means Jenkins rotated mid-run, and the
-# deposit would not be the graph the release was cut for.
+# dumps.Makefile builds pdb.owl by CONSTRUCT from the RDF4J triplestore, turns it
+# into CSVs via owl2neo4jcsv.jar and imports those into Neo4j. The Neo4j store and
+# the OWL are therefore sibling derivations of the same source — the 5.6 GB
+# tarball is a Neo4j 4 binary store, which cannot be opened without a Neo4j 4
+# binary. Depositing text serialisations instead keeps the deposit readable
+# without VFB's stack, and small enough to sit inside Zenodo's free tier forever:
+#
+#   out/kb.ttl.gz   ~109 MB   the graph
+#   out/fbbt.owl    ~120 MB   the exact FBbt this release was built against
+#   out/seed.txt     ~69 MB   the build seed that pins the result
+#
+# Together those make the release reproducible, not merely retained. The two big
+# served files are recorded in the manifest by URL, size and Last-Modified, so
+# the deposit still says exactly what was being served, without carrying 12 GB.
+#
+# CONSISTENCY CHECK. out/ holds the LATEST BUILD, which is not always what is
+# live — as of 16 Aug 2026 the out/ products were dated 12 Aug while the served
+# graph was still 27 Jun, because no release had been cut in between. Cutting a
+# release is what promotes a build, so at release time they should agree. The job
+# warns loudly if they do not, because a silent mismatch would deposit one
+# generation of the graph under a release that served another.
 #
 # Requires:
-#   secrets.ZENODO_TOKEN   Zenodo personal access token, scopes: deposit:write deposit:actions
+#   secrets.ZENODO_TOKEN   Zenodo personal access token, scopes deposit:write deposit:actions
 #   vars.ZENODO_CONCEPT    (optional) numeric id of an existing Zenodo record.
 #                          Leave unset for the first run; the run prints the id to set.
+# ---------------------------------------------------------------------------
 
 on:
   release:
@@ -39,7 +54,7 @@ on:
         description: "Release tag to archive (defaults to the latest release)"
         required: false
       dry_run:
-        description: "Download and checksum only — deposit nothing"
+        description: "Download, checksum and print the manifest — deposit nothing"
         type: boolean
         default: false
 
@@ -49,10 +64,11 @@ permissions:
 jobs:
   archive:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 120
     env:
-      PDB_URL: http://data.virtualflybrain.org/archive/VFB-PDB-v4.tar.gz
-      OWL_URL: http://VirtualFlyBrain.org/data/VFB/OWL/owlery-live.owl
+      BASE: http://VirtualFlyBrain.org/data/VFB/OWL
+      OWL_LIVE_URL: http://VirtualFlyBrain.org/data/VFB/OWL/owlery-live.owl
+      PDB_LIVE_URL: http://data.virtualflybrain.org/archive/VFB-PDB-v4.tar.gz
       ZENODO_API: https://zenodo.org/api
 
     steps:
@@ -67,53 +83,54 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Archiving graph as at release $TAG"
 
-      - name: Check there is room
-        run: |
-          df -h /
-          FREE=$(df --output=avail -k / | tail -1)
-          # need ~7 GB headroom: files are handled one at a time and deleted after upload
-          if [ "$FREE" -lt 8000000 ]; then
-            echo "::warning::Less than 8 GB free — a standard runner may not fit the OWL file."
-          fi
-
-      - name: Record what is being archived, and check it predates the release
+      - name: Probe the sources and check they are consistent
         id: probe
         env:
           RELEASED_AT: ${{ github.event.release.published_at }}
         run: |
           set -euo pipefail
-          # sources.tsv: name <TAB> url <TAB> bytes <TAB> last-modified
-          : > sources.tsv
-          for pair in "VFB-PDB-v4.tar.gz|$PDB_URL" "owlery-live.owl|$OWL_URL"; do
-            name="${pair%%|*}"; url="${pair#*|}"
-            hdr=$(curl -sIL --max-time 60 "$url")
-            len=$(printf '%s' "$hdr" | grep -i '^content-length:' | tail -1 | tr -dc '0-9')
-            mod=$(printf '%s' "$hdr" | grep -i '^last-modified:' | tail -1 | cut -d' ' -f2- | tr -d '\r')
-            if [ -z "$len" ] || [ -z "$mod" ]; then
-              echo "::error::$url did not return both Content-Length and Last-Modified"; exit 1
-            fi
-            printf '%s\t%s\t%s\t%s\n' "$name" "$url" "$len" "$mod" >> sources.tsv
-            echo "$name: $len bytes, last modified $mod"
-          done
+          : > sources.tsv   # name <TAB> url <TAB> bytes <TAB> last-modified
+          : > served.tsv    # same, for the files that are not deposited
 
-          # Both files must already have been published when the release was cut.
+          probe() {  # file, name, url
+            hdr=$(curl -sIL --max-time 120 "$3")
+            len=$(printf '%s' "$hdr" | grep -i '^content-length:' | tail -1 | tr -dc '0-9')
+            mod=$(printf '%s' "$hdr" | grep -i '^last-modified:'  | tail -1 | cut -d' ' -f2- | tr -d '\r')
+            [ -n "$len" ] && [ -n "$mod" ] || { echo "::error::$3 gave no Content-Length/Last-Modified"; exit 1; }
+            printf '%s\t%s\t%s\t%s\n' "$2" "$3" "$len" "$mod" >> "$1"
+            echo "  $2: $len bytes, $mod"
+          }
+
+          echo "deposited:"
+          probe sources.tsv kb.ttl.gz "$BASE/out/kb.ttl.gz"
+          probe sources.tsv fbbt.owl  "$BASE/out/fbbt.owl"
+          probe sources.tsv seed.txt  "$BASE/out/seed.txt"
+          echo "served (recorded, not deposited):"
+          probe served.tsv  owlery-live.owl   "$OWL_LIVE_URL"
+          probe served.tsv  VFB-PDB-v4.tar.gz "$PDB_LIVE_URL"
+
+          # 1. everything must predate the release
           if [ -n "${RELEASED_AT:-}" ]; then
-            rel_epoch=$(date -u -d "$RELEASED_AT" +%s)
-            fail=0
-            while IFS=$'\t' read -r name url len mod; do
-              f_epoch=$(date -u -d "$mod" +%s)
-              if [ "$f_epoch" -gt "$rel_epoch" ]; then
-                echo "::error::$name was modified at $mod, after the release was published at $RELEASED_AT."
-                echo "::error::Jenkins rotated it mid-run; this deposit would not be the graph this release was cut for."
-                fail=1
-              else
-                age_d=$(( (rel_epoch - f_epoch) / 86400 ))
-                echo "$name predates the release by ${age_d} day(s) — OK"
-              fi
-            done < sources.tsv
+            rel=$(date -u -d "$RELEASED_AT" +%s); fail=0
+            while IFS=$'\t' read -r n u l m; do
+              [ "$(date -u -d "$m" +%s)" -le "$rel" ] || {
+                echo "::error::$n was modified at $m, after the release was published at $RELEASED_AT — the pipeline moved mid-run."; fail=1; }
+            done < <(cat sources.tsv served.tsv)
             [ "$fail" -eq 0 ] || exit 1
+            echo "all sources predate the release"
           else
             echo "::notice::Manual run — skipping the predates-the-release check."
+          fi
+
+          # 2. the build products and the served graph should be the same generation
+          bm=$(date -u -d "$(awk -F'\t' '$1=="kb.ttl.gz"{print $4}' sources.tsv)" +%s)
+          sm=$(date -u -d "$(awk -F'\t' '$1=="owlery-live.owl"{print $4}' served.tsv)" +%s)
+          gap=$(( (bm - sm) / 86400 )); gap=${gap#-}
+          if [ "$gap" -gt 2 ]; then
+            echo "::warning::out/kb.ttl.gz and the served owlery-live.owl are $gap days apart."
+            echo "::warning::out/ holds the latest BUILD; cutting a release is what promotes it. If a build has not been promoted, this deposit describes a different generation from the one being served — check before relying on it."
+          else
+            echo "build products and served graph agree to within $gap day(s)"
           fi
 
       - name: Open a Zenodo version
@@ -124,31 +141,21 @@ jobs:
           CONCEPT: ${{ vars.ZENODO_CONCEPT }}
         run: |
           set -euo pipefail
-          if [ -z "${TOKEN:-}" ]; then
-            echo "::error::ZENODO_TOKEN is not set"; exit 1
-          fi
+          [ -n "${TOKEN:-}" ] || { echo "::error::ZENODO_TOKEN is not set"; exit 1; }
           if [ -n "${CONCEPT:-}" ]; then
             echo "Creating a new version of record $CONCEPT"
             resp=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
                    "$ZENODO_API/deposit/depositions/$CONCEPT/actions/newversion")
-            latest=$(printf '%s' "$resp" | jq -r '.links.latest_draft')
-            resp=$(curl -sf -H "Authorization: Bearer $TOKEN" "$latest")
+            resp=$(curl -sf -H "Authorization: Bearer $TOKEN" "$(printf '%s' "$resp" | jq -r '.links.latest_draft')")
           else
             echo "No ZENODO_CONCEPT set — creating a brand new record"
             resp=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
-                   -H "Content-Type: application/json" -d '{}' \
-                   "$ZENODO_API/deposit/depositions")
+                   -H "Content-Type: application/json" -d '{}' "$ZENODO_API/deposit/depositions")
           fi
-          id=$(printf '%s' "$resp" | jq -r '.id')
-          bucket=$(printf '%s' "$resp" | jq -r '.links.bucket')
-          echo "id=$id" >> "$GITHUB_OUTPUT"
-          echo "bucket=$bucket" >> "$GITHUB_OUTPUT"
-          echo "Deposition $id"
+          echo "id=$(printf '%s' "$resp" | jq -r '.id')"          >> "$GITHUB_OUTPUT"
+          echo "bucket=$(printf '%s' "$resp" | jq -r '.links.bucket')" >> "$GITHUB_OUTPUT"
 
-      # Runs on a dry run too: downloading and checksumming is the part worth
-      # rehearsing, since it is where 12 GB and two hours go. Only the upload
-      # and the publish are skipped.
-      - name: Fetch, checksum and upload each file
+      - name: Fetch, checksum and upload
         env:
           TOKEN: ${{ secrets.ZENODO_TOKEN }}
           BUCKET: ${{ steps.dep.outputs.bucket }}
@@ -156,48 +163,55 @@ jobs:
           DRY: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          : > manifest.txt
           {
             echo "Virtual Fly Brain knowledge graph — release $TAG"
             echo "captured $(date -u +%Y-%m-%dT%H:%M:%SZ) by ${{ github.workflow }} run ${{ github.run_id }}"
             echo "source repo commit ${{ github.sha }}"
             echo
-            echo "The release tag is the date the release was cut. The dates below are"
-            echo "when each file was actually published, which is what this deposit contains."
+            echo "The release tag is the date the release was cut. The dates below are when"
+            echo "each file was published, which is what this deposit describes."
             echo
-          } >> manifest.txt
-          # one at a time so peak disk stays near the size of the larger file
-          while IFS=$'\t' read -r name url declared_len mod; do
+            echo "== deposited =="
+          } > manifest.txt
+
+          while IFS=$'\t' read -r name url len mod; do
             echo "::group::$name"
-            curl -fL --retry 5 --retry-delay 10 --retry-all-errors \
-                 --max-time 7200 -o "$name" "$url"
-            sum=$(sha256sum "$name" | cut -d' ' -f1)
-            size=$(stat -c%s "$name")
-            if [ "$size" != "$declared_len" ]; then
-              echo "::error::$name is $size bytes but the server advertised $declared_len — truncated or rotated mid-download."
-              exit 1
-            fi
+            curl -fL --retry 5 --retry-delay 10 --retry-all-errors --max-time 3600 -o "$name" "$url"
+            got=$(stat -c%s "$name")
+            [ "$got" = "$len" ] || { echo "::error::$name is $got bytes, server advertised $len — truncated or rotated mid-download."; exit 1; }
             {
               echo "$name"
-              echo "  sha256         $sum"
-              echo "  size           $size bytes"
-              echo "  published      $mod"
-              echo "  source         $url"
+              echo "    sha256     $(sha256sum "$name" | cut -d' ' -f1)"
+              echo "    size       $got bytes"
+              echo "    published  $mod"
+              echo "    source     $url"
             } >> manifest.txt
             if [ "${DRY:-false}" = "true" ]; then
               echo "dry run — not uploading $name"
             else
-              curl -fT "$name" "$BUCKET/$name?access_token=$TOKEN" -o /dev/null \
-                --retry 3 --retry-delay 30 --max-time 7200
+              curl -fT "$name" "$BUCKET/$name?access_token=$TOKEN" -o /dev/null --retry 3 --retry-delay 30 --max-time 3600
               echo "uploaded $name"
             fi
             rm -f "$name"
             echo "::endgroup::"
           done < sources.tsv
+
+          {
+            echo
+            echo "== served at this release, not deposited =="
+            echo "The Neo4j production database is a binary store that cannot be read without"
+            echo "a matching Neo4j binary, and owlery-live.owl is a 6.6 GB rendering of the same"
+            echo "content deposited above as kb.ttl.gz. Both are kept on VFB's archive and linked"
+            echo "from the GitHub release; they are identified here so the deposit records exactly"
+            echo "what this release served."
+            echo
+            while IFS=$'\t' read -r name url len mod; do
+              printf '%s\n    size       %s bytes\n    published  %s\n    source     %s\n' "$name" "$len" "$mod" "$url"
+            done < served.tsv
+          } >> manifest.txt
+
           echo "::group::manifest"; cat manifest.txt; echo "::endgroup::"
-          if [ "${DRY:-false}" != "true" ]; then
-            curl -fT manifest.txt "$BUCKET/manifest.txt?access_token=$TOKEN" -o /dev/null
-          fi
+          [ "${DRY:-false}" = "true" ] || curl -fT manifest.txt "$BUCKET/manifest.txt?access_token=$TOKEN" -o /dev/null
 
       - name: Describe and publish the deposit
         if: ${{ !inputs.dry_run }}
@@ -207,19 +221,20 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
-          DESC="<p>The Virtual Fly Brain knowledge graph as served at release <code>$TAG</code>.</p>
-          <p>Contains the Neo4j production database backup (<code>VFB-PDB-v4.tar.gz</code>, the file
-          restored by <code>loadDB.sh</code> in <code>virtualflybrain/docker-vfb-neo4j-productiondb:$TAG</code>)
-          and the reasoner-ready OWL (<code>owlery-live.owl</code>, the file loaded by
-          <code>virtualflybrain/owlery-vfb</code>), together with SHA-256 checksums for both.</p>
-          <p>Captured directly from the public endpoints at the moment the release was published, so the
-          deposit is the graph that release actually served.</p>"
+          DESC="<p>The Virtual Fly Brain knowledge graph as released at <code>$TAG</code>.</p>
+          <p>Contains the graph as Turtle (<code>kb.ttl.gz</code>), the exact version of the
+          <em>Drosophila</em> Anatomy Ontology it was built against (<code>fbbt.owl</code>), and the
+          build seed that pins the result (<code>seed.txt</code>), with SHA-256 checksums for each.
+          Together these make the release reproducible rather than merely retained.</p>
+          <p>The Neo4j production database and <code>owlery-live.owl</code> served by this release are
+          identified in <code>manifest.txt</code> by URL, size and publication date; both are
+          derivations of the same triplestore content deposited here.</p>"
           jq -n --arg t "Virtual Fly Brain knowledge graph $TAG" --arg d "$DESC" --arg v "$TAG" \
             '{metadata:{title:$t, upload_type:"dataset", description:$d, version:$v,
               license:"cc-by-4.0", access_right:"open",
               creators:[{name:"Court, Robert", affiliation:"University of Edinburgh",
                          orcid:"0000-0002-0173-9080"}],
-              keywords:["Drosophila melanogaster","knowledge graph","Neo4j","OWL",
+              keywords:["Drosophila melanogaster","knowledge graph","ontology","OWL","RDF",
                         "Virtual Fly Brain","neuroanatomy","connectomics"],
               related_identifiers:[
                 {identifier:"10.3389/fphys.2023.1076533", relation:"isSupplementTo", scheme:"doi"}]}}' \
@@ -228,20 +243,14 @@ jobs:
                -d @meta.json "$ZENODO_API/deposit/depositions/$ID" -o /dev/null
           pub=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
                 "$ZENODO_API/deposit/depositions/$ID/actions/publish")
-          doi=$(printf '%s' "$pub" | jq -r '.doi')
-          concept=$(printf '%s' "$pub" | jq -r '.conceptrecid')
-          echo "DOI: $doi"
           {
             echo "### Archived to Zenodo"
-            echo "- version DOI: \`$doi\`"
-            echo "- concept id: \`$concept\` — set this as the repository variable \`ZENODO_CONCEPT\` if it is not already"
+            echo "- version DOI: \`$(printf '%s' "$pub" | jq -r '.doi')\`"
+            echo "- concept id: \`$(printf '%s' "$pub" | jq -r '.conceptrecid')\` — set this as the repository variable \`ZENODO_CONCEPT\` if it is not already"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Attach the manifest to the GitHub release
         if: ${{ !inputs.dry_run && github.event_name == 'release' }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          # the data files themselves exceed GitHub's 2 GB per-asset limit, so only
-          # the checksum manifest is attached here; the data lives in Zenodo
-          gh release upload "${{ steps.tag.outputs.tag }}" manifest.txt --clobber
+        run: gh release upload "${{ steps.tag.outputs.tag }}" manifest.txt --clobber

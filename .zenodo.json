@@ -1,0 +1,28 @@
+{
+  "title": "Virtual Fly Brain production knowledge graph (Neo4j) release images",
+  "upload_type": "software",
+  "license": "cc-by-4.0",
+  "access_right": "open",
+  "creators": [
+    {
+      "name": "Court, Robert",
+      "affiliation": "University of Edinburgh",
+      "orcid": "0000-0002-0173-9080"
+    }
+  ],
+  "description": "<p>Build definition and release history for the Virtual Fly Brain production Neo4j knowledge-graph image. Release tags follow <code>v4.YY.MM.DD</code> and identify the data release served at virtualflybrain.org on that date.</p><p>The knowledge graph itself is deposited separately and versioned against these release tags.</p>",
+  "keywords": [
+    "Drosophila melanogaster",
+    "knowledge graph",
+    "Neo4j",
+    "Virtual Fly Brain",
+    "neuroanatomy"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "10.3389/fphys.2023.1076533",
+      "relation": "isSupplementTo",
+      "scheme": "doi"
+    }
+  ]
+}

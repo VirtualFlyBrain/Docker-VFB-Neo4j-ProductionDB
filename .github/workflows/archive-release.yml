@@ -1,47 +1,58 @@
 name: Archive release to Zenodo
 
-# When a release is published here, deposit that release's knowledge graph to
-# Zenodo with a DOI, as a new version of one long-lived record.
+# When a release is published here, deposit the knowledge graph to Zenodo with a
+# DOI, as a new version of one long-lived record.
+#
+# How this is meant to be used:
+#   1. Jenkins builds and promotes the PDB and OWL to the public paths.
+#   2. Once both are live, cut a release here, tagged with that day's date.
+#   3. This job takes whatever is latest at those paths and deposits it.
+#
+# So the release tag says WHEN the release was cut, and the deposit says WHAT
+# was in it. Until now the only dated copies were the `previous-*` files in the
+# Jenkins workspace, stamped with the date they were DISPLACED rather than the
+# date their content went live, so working out which graph belonged to which
+# release meant reasoning backwards through the rotation.
 #
 # ---------------------------------------------------------------------------
-# IT READS ONLY THE RELEASE-NAMED ARCHIVE, NEVER THE LIVE PATHS
+# WHAT IS DEPOSITED — the two files that constitute a VFB release, taken from
+# the live locations at the moment the release is published:
 #
-# /data/VFB/OWL/ and /data/VFB/OWL/out/ are working directories. Partial pipeline
-# deployments run between releases and overwrite them in place, so a file fetched
-# from there is whatever the pipeline last wrote — not what this release serves.
-# Reading them would silently deposit the wrong generation of the graph under a
-# release tag, which is exactly the confusion this job exists to end.
+#   http://data.virtualflybrain.org/archive/VFB-PDB-v4.tar.gz   ~5.6 GB
+#       the Neo4j production database, the backup loadDB.sh restores
+#   http://VirtualFlyBrain.org/data/VFB/OWL/owlery-live.owl     ~6.6 GB
+#       the reasoner input loaded by owlery-vfb
 #
-# So the job fetches only immutable, release-named copies:
+# These two are the promoted release artefacts. Nothing else under
+# /data/VFB/OWL/ is — `out/`, `raw/` and the working files there are overwritten
+# by partial pipeline deployments between releases, so they are build state, not
+# release state, and this job must never read them.
 #
-#   <ARCHIVE_BASE>/VFB-PDB-v<release>.tar.gz     the Neo4j production database
-#   <ARCHIVE_BASE>/VFB-OWL-v<release>.owl.gz     the reasoner input
-#                  (falls back to .owl if the uncompressed name is used)
+# The job runs on `release: published`, so it reads those two paths while they
+# still hold the release that was just cut. The predates-the-release check below
+# is what makes that safe: if the pipeline promoted a new build between the
+# release being published and this job running, the file will be newer than the
+# release and the job fails rather than depositing the wrong generation.
 #
-# where <release> is the tag with its leading "v" removed, so v26.08.16 gives
-# VFB-PDB-v26.08.16.tar.gz.
+# Both go in whole. The production database in particular CANNOT be rebuilt from
+# the OWL dumps: pdb.owl is only part of what ends up in the graph — the
+# connectome, region-connectivity, scRNAseq and EPseq edges are side-loaded into
+# Neo4j from separate CSVs, with further post-processing after that.
 #
-# THIS REQUIRES A JENKINS STEP. At release time the pipeline must copy the
-# promoted PDB and OWL to the archive under those names. Until that exists, the
-# job fails with a clear message rather than falling back to a live path — a
-# loud failure is worth far more than a deposit that is quietly wrong.
+# owlery-live.owl is gzipped before upload. Measured on the live file that is
+# 37.0x (6,632,943,902 -> 179,411,457 B), so the deposit costs ~5.8 GB rather
+# than 12.2 GB. The manifest records the SHA-256 of the file as served, taken
+# before compression, so `gunzip -c owlery-live.owl.gz | sha256sum` reproduces it.
+# The PDB tarball is already gzip and is deposited unchanged.
 #
-# WHY BOTH FILES, WHOLE. The production database cannot be rebuilt from the OWL
-# dumps: pdb.owl is only part of what ends up in the graph, since the connectome,
-# region-connectivity, scRNAseq and EPseq edges are side-loaded into Neo4j from
-# separate CSVs, with further post-processing after that.
-#
-# Anything not already gzip is gzipped before upload — measured on the live OWL
-# that is 37.0x (6,632,943,902 -> 179,411,457 B). The manifest records the SHA-256
-# of each file as fetched, before compression, so
-#   gunzip -c <file> | sha256sum
-# reproduces it.
+# The job fails if either file is newer than the release, which would mean the
+# pipeline rotated mid-run and the deposit would not be the graph the release
+# was cut for.
 #
 # Requires:
 #   secrets.ZENODO_TOKEN   Zenodo personal access token, scopes deposit:write deposit:actions
 #   vars.ZENODO_CONCEPT    (optional) numeric id of an existing Zenodo record.
 #                          Leave unset for the first run; the run prints the id to set.
-#   vars.ARCHIVE_BASE      (optional) override the archive URL below.
 # ---------------------------------------------------------------------------
 
 on:
@@ -63,10 +74,12 @@ permissions:
 jobs:
   archive:
     runs-on: ubuntu-latest
-    # Peak disk is the largest single file plus its gzip; files are handled one
-    # at a time and deleted after upload.
+    # 12.2 GB down, ~5.8 GB up. Peak disk is owlery-live.owl plus its gzip,
+    # ~6.8 GB; files are handled one at a time and deleted after upload.
     timeout-minutes: 240
     env:
+      OWL_URL: http://VirtualFlyBrain.org/data/VFB/OWL/owlery-live.owl
+      PDB_URL: http://data.virtualflybrain.org/archive/VFB-PDB-v4.tar.gz
       ZENODO_API: https://zenodo.org/api
 
     steps:
@@ -78,54 +91,55 @@ jobs:
           TAG="${{ github.event.release.tag_name }}"
           [ -z "$TAG" ] && TAG="${{ inputs.tag }}"
           [ -z "$TAG" ] && TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo untagged)"
-          echo "tag=$TAG"    >> "$GITHUB_OUTPUT"
-          echo "rel=${TAG#v}" >> "$GITHUB_OUTPUT"
-          echo "Archiving release $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Archiving graph as at release $TAG"
 
       - name: Check there is room
         run: |
           df -h /
           FREE=$(df --output=avail -k / | tail -1)
-          [ "$FREE" -ge 9000000 ] || echo "::warning::Less than 9 GB free on the runner."
+          [ "$FREE" -ge 9000000 ] || echo "::warning::Less than 9 GB free — owlery-live.owl plus its gzip may not fit."
 
-      - name: Locate this release's files on the archive
+      - name: Probe the sources and check they predate the release
         id: probe
         env:
-          REL: ${{ steps.tag.outputs.rel }}
-          BASE: ${{ vars.ARCHIVE_BASE || 'http://data.virtualflybrain.org/archive' }}
+          RELEASED_AT: ${{ github.event.release.published_at }}
         run: |
           set -euo pipefail
           : > sources.tsv   # name <TAB> url <TAB> bytes <TAB> last-modified
-          missing=0
+          for pair in "VFB-PDB-v4.tar.gz|$PDB_URL" "owlery-live.owl|$OWL_URL"; do
+            name="${pair%%|*}"; url="${pair#*|}"
+            hdr=$(curl -sIL --max-time 120 "$url")
+            len=$(printf '%s' "$hdr" | grep -i '^content-length:' | tail -1 | tr -dc '0-9')
+            mod=$(printf '%s' "$hdr" | grep -i '^last-modified:'  | tail -1 | cut -d' ' -f2- | tr -d '\r')
+            [ -n "$len" ] && [ -n "$mod" ] || { echo "::error::$url gave no Content-Length/Last-Modified"; exit 1; }
+            printf '%s\t%s\t%s\t%s\n' "$name" "$url" "$len" "$mod" >> sources.tsv
+            echo "$name: $len bytes, last modified $mod"
+          done
 
-          find_one() {   # label, candidate URLs...
-            label="$1"; shift
-            for url in "$@"; do
-              hdr=$(curl -sIL --max-time 120 "$url" || true)
-              code=$(printf '%s' "$hdr" | awk '/^HTTP/{c=$2} END{print c}')
-              [ "$code" = "200" ] || { echo "  $label: not at $url (HTTP ${code:-none})"; continue; }
-              len=$(printf '%s' "$hdr" | grep -i '^content-length:' | tail -1 | tr -dc '0-9')
-              mod=$(printf '%s' "$hdr" | grep -i '^last-modified:'  | tail -1 | cut -d' ' -f2- | tr -d '\r')
-              [ -n "$len" ] || { echo "::error::$url returned 200 but no Content-Length"; exit 1; }
-              printf '%s\t%s\t%s\t%s\n' "$(basename "$url")" "$url" "$len" "${mod:-unknown}" >> sources.tsv
-              echo "  $label: $(basename "$url") — $len bytes, ${mod:-no Last-Modified}"
-              return 0
-            done
-            return 1
-          }
-
-          find_one PDB "$BASE/VFB-PDB-v${REL}.tar.gz" || missing=1
-          find_one OWL "$BASE/VFB-OWL-v${REL}.owl.gz" "$BASE/VFB-OWL-v${REL}.owl" || missing=1
-
-          if [ "$missing" -ne 0 ]; then
-            echo "::error::This release's files are not on the archive yet."
-            echo "::error::Expected $BASE/VFB-PDB-v${REL}.tar.gz and $BASE/VFB-OWL-v${REL}.owl.gz"
-            echo "::error::Publish the release-named copies from the pipeline first, then re-run this job."
-            echo "::error::Deliberately not falling back to the live /data/VFB/OWL paths: partial pipeline"
-            echo "::error::deployments overwrite those between releases, so they are not this release's graph."
-            exit 1
+          if [ -n "${RELEASED_AT:-}" ]; then
+            rel=$(date -u -d "$RELEASED_AT" +%s); fail=0
+            while IFS=$'\t' read -r n u l m; do
+              f=$(date -u -d "$m" +%s)
+              if [ "$f" -gt "$rel" ]; then
+                echo "::error::$n was modified at $m, after the release was published at $RELEASED_AT."
+                echo "::error::The pipeline rotated mid-run; this deposit would not be the graph this release was cut for."
+                fail=1
+              else
+                echo "$n predates the release by $(( (rel - f) / 86400 )) day(s) — OK"
+              fi
+            done < sources.tsv
+            [ "$fail" -eq 0 ] || exit 1
+          else
+            echo "::notice::Manual run — skipping the predates-the-release check."
           fi
-          echo "both files present on the archive"
+
+          # The two files are promoted together, so a large gap between them means
+          # only one half of the release went live.
+          a=$(date -u -d "$(awk -F'\t' 'NR==1{print $4}' sources.tsv)" +%s)
+          b=$(date -u -d "$(awk -F'\t' 'NR==2{print $4}' sources.tsv)" +%s)
+          gap=$(( a - b )); gap=${gap#-}
+          [ "$gap" -le 86400 ] || echo "::warning::the PDB and OWL are $(( gap / 86400 )) days apart — are both halves of this release live?"
 
       - name: Open a Zenodo version
         if: ${{ !inputs.dry_run }}
@@ -170,10 +184,11 @@ jobs:
             echo "captured $(date -u +%Y-%m-%dT%H:%M:%SZ) by ${{ github.workflow }} run ${{ github.run_id }}"
             echo "source repo commit ${{ github.sha }}"
             echo
-            echo "Taken from the release-named copies on VFB's archive, never from the live"
-            echo "/data/VFB/OWL paths, which partial pipeline deployments overwrite between"
-            echo "releases. sha256 is of the file as fetched, before any compression applied"
-            echo "here; where a .gz was produced, gunzip -c <file> | sha256sum reproduces it."
+            echo "The release tag is the date the release was cut. The dates below are when"
+            echo "each file was published, which is what this deposit contains."
+            echo
+            echo "sha256 is of the file as served, before any compression. Where a .gz is"
+            echo "deposited, gunzip -c <file> | sha256sum reproduces it."
             echo
           } > manifest.txt
 
@@ -182,7 +197,7 @@ jobs:
             echo "::group::$name"
             curl -fL --retry 5 --retry-delay 10 --retry-all-errors --max-time 7200 -o "$name" "$url"
             got=$(stat -c%s "$name")
-            [ "$got" = "$len" ] || { echo "::error::$name is $got bytes, server advertised $len — truncated."; exit 1; }
+            [ "$got" = "$len" ] || { echo "::error::$name is $got bytes, server advertised $len — truncated or rotated mid-download."; exit 1; }
             sum=$(sha256sum "$name" | cut -d' ' -f1)
 
             upload="$name"
@@ -231,18 +246,17 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
-          DESC="<p>The Virtual Fly Brain knowledge graph as released at <code>$TAG</code>.</p>
+          DESC="<p>The Virtual Fly Brain knowledge graph as served at release <code>$TAG</code>.</p>
           <p>Contains the two files that constitute a VFB release: the Neo4j production database
-          (<code>VFB-PDB-v${TAG#v}.tar.gz</code>, the backup restored by <code>loadDB.sh</code> in
+          (<code>VFB-PDB-v4.tar.gz</code>, the backup restored by <code>loadDB.sh</code> in
           <code>virtualflybrain/docker-vfb-neo4j-productiondb:$TAG</code>) and the reasoner input
-          (<code>VFB-OWL-v${TAG#v}.owl.gz</code>, loaded by <code>virtualflybrain/owlery-vfb</code>).
-          SHA-256 checksums are in <code>manifest.txt</code>.</p>
+          (<code>owlery-live.owl</code>, loaded by <code>virtualflybrain/owlery-vfb</code>, deposited
+          gzipped). SHA-256 checksums of both files as served are in <code>manifest.txt</code>.</p>
           <p>The production database is deposited whole rather than as OWL because it cannot be
           rebuilt from the OWL dumps: the connectome, region-connectivity, scRNAseq and EPseq edges
           are side-loaded into Neo4j from separate CSVs, with further post-processing after that.</p>
-          <p>Taken from the release-named copies on VFB's archive rather than the live working
-          directories, so the deposit is this release's graph and not whatever a later partial
-          pipeline run happened to leave in place.</p>"
+          <p>Captured from the public endpoints at the moment the release was published, so the
+          deposit is the graph that release actually served.</p>"
           jq -n --arg t "Virtual Fly Brain knowledge graph $TAG" --arg d "$DESC" --arg v "$TAG" \
             '{metadata:{title:$t, upload_type:"dataset", description:$d, version:$v,
               license:"cc-by-4.0", access_right:"open",

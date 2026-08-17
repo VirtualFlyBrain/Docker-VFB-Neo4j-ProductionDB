@@ -55,8 +55,11 @@ name: Archive release to Zenodo
 #
 # Requires:
 #   secrets.ZENODO_TOKEN   Zenodo personal access token, scopes deposit:write deposit:actions
-#   vars.ZENODO_CONCEPT    (optional) numeric id of an existing Zenodo record.
-#                          Leave unset for the first run; the run prints the id to set.
+#   vars.ZENODO_CONCEPT    (optional) numeric id of the existing Zenodo record.
+#                          Leave unset for the first run; the run prints the id to
+#                          set. Either the concept id or any version's id works —
+#                          the job resolves the latest version itself, so this is
+#                          set once and never updated.
 # ---------------------------------------------------------------------------
 
 on:
@@ -155,9 +158,18 @@ jobs:
           set -euo pipefail
           [ -n "${TOKEN:-}" ] || { echo "::error::ZENODO_TOKEN is not set"; exit 1; }
           if [ -n "${CONCEPT:-}" ]; then
-            echo "Creating a new version of record $CONCEPT"
+            # Zenodo's actions/newversion only accepts the id of the LATEST
+            # published version, not the concept id — so a variable holding a
+            # fixed id goes stale the moment a release is made. Resolve the
+            # latest every time instead. This endpoint accepts either the concept
+            # id or any version's id and returns the newest, so ZENODO_CONCEPT
+            # can hold whichever and never needs touching again. -L matters: the
+            # records API answers 301 before it answers 200.
+            LATEST=$(curl -sfL --max-time 120 "$ZENODO_API/records/$CONCEPT/versions/latest" | jq -r '.id // empty')
+            [ -n "$LATEST" ] || { echo "::error::could not resolve the latest version of Zenodo record $CONCEPT"; exit 1; }
+            echo "Record $CONCEPT — latest published version is $LATEST; creating a new version from it"
             resp=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" \
-                   "$ZENODO_API/deposit/depositions/$CONCEPT/actions/newversion")
+                   "$ZENODO_API/deposit/depositions/$LATEST/actions/newversion")
             resp=$(curl -sf -H "Authorization: Bearer $TOKEN" "$(printf '%s' "$resp" | jq -r '.links.latest_draft')")
             id=$(printf '%s' "$resp" | jq -r '.id')
             # a new version inherits the previous version's files — clear them

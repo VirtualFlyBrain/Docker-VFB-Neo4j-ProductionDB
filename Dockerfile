@@ -18,7 +18,12 @@ ENV NEO4J_dbms_memory_heap_initial__size=1G
 ENV NEO4J_dbms_read__only=true
 ENV NEO4J_dbms_security_procedures_unrestricted=ebi.spot.neo4j2owl.*,apoc.*,gds.*
 
-RUN apt-get -y update && apt-get -y install tar gzip curl wget zip unzip
+# Debian bullseye reached end of LTS on 31 Aug 2026 and its -security pool has
+# been removed from deb.debian.org while the index still lists it, so any
+# install that resolves to a bullseye-security version 404s. Drop that source
+# and take the bullseye/main versions instead.
+RUN sed -i '/bullseye-security/d' /etc/apt/sources.list \
+ && apt-get -y update && apt-get -y install tar gzip curl wget zip unzip
 
 COPY loadDB.sh /opt/VFB/
 COPY gds_projections.sh /opt/VFB/

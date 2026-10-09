@@ -10,6 +10,15 @@ if [ ! -d /data/databases/neo4j ] || [ -z "$(ls -A /data/databases/neo4j 2>/dev/
   echo "[pdb] restoring ${URL}"
   mkdir -p /data/databases /data/transactions "${WORK}"
   rm -rf "${WORK:?}"/*
+  # The extracted backup is ~45 GB. Refuse unless WORK is a mounted scratch volume with room for it: extracting
+  # into the container's own layer fills the node's system disk and gets every pod on the node evicted.
+  need_kb=$(( ${RESTORE_MIN_FREE_GB:-55} * 1024 * 1024 ))
+  free_kb=$(df -Pk "${WORK}" | awk 'NR==2{print $4}')
+  if ! mountpoint -q "${WORK}" || [ "${free_kb}" -lt "${need_kb}" ]; then
+    echo "[pdb] ${WORK} is not a mounted scratch volume with >= ${RESTORE_MIN_FREE_GB:-55} GB free (free: $((free_kb/1024/1024)) GB, mountpoint: $(mountpoint -q "${WORK}" && echo yes || echo no))."
+    echo "[pdb] Mount a volume at ${WORK} (or clone a loaded golden volume to /data). Refusing to restore."
+    exit 1
+  fi
   # stream download straight into tar: no 5.7 GB intermediate file, one pass over the disk
   for attempt in 1 2 3; do
     if curl -fsSL --retry 3 --retry-delay 10 "${URL}" | tar -xz -C "${WORK}"; then break; fi

@@ -1,35 +1,31 @@
-#!/bin/sh
-echo "set read only = ${NEOREADONLY} then launch neo4j service"
-sed -i s/read_only=.*/read_only=${NEOREADONLY}/ ${NEOSERCONF} && \
+#!/bin/bash
+# Restore the latest VFB release into /data (once per volume), then start Neo4j.
+# Fails hard (exit 1) on any download/restore error so the orchestrator retries, instead of starting an empty DB.
+set -euo pipefail
 
-echo 'Allow new plugin to make changes..'
-echo 'dbms.security.procedures.unrestricted=apoc.*,gds.*' >> ${NEOSERCONF}
+URL="${BACKUPURL:-http://data.virtualflybrain.org/archive/${BACKUPFILE}.tar.gz}"
+WORK=/opt/VFB/backup
 
-if [ -n "${BACKUPFILE}" ]; then
-  if [ ! -d /data/databases/neo4j ]; then
-    echo 'Resore KB from archive backup'
-    cd /opt/VFB/backup/
-    rm /opt/VFB/backup/${BACKUPFILE}.tar.gz
-    wget http://data.virtualflybrain.org/archive/${BACKUPFILE}.tar.gz 
-    if [ ! -e ${BACKUPFILE}.tar.gz ]; then exit 1; fi
-    tar -xzvf ${BACKUPFILE}.tar.gz
-    mkdir -p /var/lib/neo4j/data/databases/
-    neo4j-admin restore --from /opt/VFB/backup/neo4j --force
-    rm -rf /opt/VFB/backup/*
-    cd -
-  fi
+if [ ! -d /data/databases/neo4j ] || [ -z "$(ls -A /data/databases/neo4j 2>/dev/null)" ]; then
+  echo "[pdb] restoring ${URL}"
+  mkdir -p /data/databases /data/transactions "${WORK}"
+  rm -rf "${WORK:?}"/*
+  # stream download straight into tar: no 5.7 GB intermediate file, one pass over the disk
+  for attempt in 1 2 3; do
+    if curl -fsSL --retry 3 --retry-delay 10 "${URL}" | tar -xz -C "${WORK}"; then break; fi
+    echo "[pdb] download/extract attempt ${attempt} failed"; rm -rf "${WORK:?}"/*
+    [ "${attempt}" = 3 ] && exit 1
+    sleep 30
+  done
+  neo4j-admin restore --from="${WORK}/neo4j" --database=neo4j --force
+  rm -rf "${WORK:?}"/*
+  chown -R neo4j:neo4j /data
+  echo "[pdb] restore complete"
 fi
 
-echo -e '\nSTARTING VFB DB SERVER\n' >> /var/lib/neo4j/logs/query.log
+touch /logs/query.log 2>/dev/null || true
+tail -F /logs/query.log 2>/dev/null >/proc/1/fd/1 &       # slow-query log -> container stdout (Loki)
+rm -f /var/lib/neo4j/run/pdb-ready
+/opt/VFB/post_start.sh >/proc/1/fd/1 2>&1 &                # warm-up + GDS projections + ready marker
 
-#Output the query log to docker log:
-tail -f /var/lib/neo4j/logs/query.log >/proc/1/fd/1 &
-
-#TODO check for "Error upgrading database."
-
-# (Re)build the Circuit Browser per-connectome GDS projections once Neo4j is
-# accepting queries. GDS projections are in-memory only, so this runs on every
-# start (after the DB restore above). Backgrounded so it does not block Neo4j.
-/opt/VFB/gds_projections.sh >> /var/lib/neo4j/logs/gds_projections.log 2>&1 &
-
-exec /docker-entrypoint.sh neo4j
+exec /startup/docker-entrypoint.sh neo4j

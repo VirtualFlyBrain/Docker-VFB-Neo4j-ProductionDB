@@ -12,9 +12,17 @@
 #
 set -u
 
-USER="${GDS_NEO4J_USER:-neo4j}"
-PASS="${GDS_NEO4J_PASSWORD:-vfb}"
+USER="${GDS_NEO4J_USER:-${NEO4J_AUTH%%/*}}"
+PASS="${GDS_NEO4J_PASSWORD:-${NEO4J_AUTH#*/}}"
 CYPHER="cypher-shell -a bolt://localhost:7687 -u ${USER} -p ${PASS} --format plain"
+
+# GDS 2.x renamed gds.graph.create.cypher -> gds.graph.project.cypher; support both.
+if printf "CALL gds.list() YIELD name WHERE name = 'gds.graph.project.cypher' RETURN count(*);\n" | $CYPHER 2>/dev/null | tail -1 | grep -qx 1; then
+  PROJECT=gds.graph.project.cypher
+else
+  PROJECT=gds.graph.create.cypher
+fi
+echo "[gds] using ${PROJECT}"
 
 echo "[gds] waiting for Neo4j to accept queries ..."
 i=0
@@ -42,8 +50,8 @@ for SF in $SFS; do
 
   # weight_p (= 5000 - synaptic weight) is the path cost so stronger connections
   # are shorter; raw weight kept for the client's display filter.
-  printf "CALL gds.graph.create.cypher('%s', 'MATCH (n:Neuron:has_neuron_connectivity)-[:database_cross_reference]->(:Connectome {short_form:\"%s\"}) RETURN id(n) AS id', 'MATCH (:Connectome {short_form:\"%s\"})<-[:database_cross_reference]-(a:Neuron:has_neuron_connectivity)-[r:synapsed_to]->(b:Neuron:has_neuron_connectivity)-[:database_cross_reference]->(:Connectome {short_form:\"%s\"}) WHERE exists(r.weight) RETURN id(a) AS source, id(b) AS target, 5000 - r.weight[0] AS weight_p, r.weight[0] AS weight') YIELD graphName, nodeCount, relationshipCount RETURN graphName, nodeCount, relationshipCount;\n" \
-    "$G" "$SF" "$SF" "$SF" | $CYPHER
+  printf "CALL ${PROJECT}('%s', 'MATCH (n:Neuron:has_neuron_connectivity)-[:database_cross_reference]->(:Connectome {short_form:\"%s\"}) RETURN id(n) AS id', 'MATCH (:Connectome {short_form:\"%s\"})<-[:database_cross_reference]-(a:Neuron:has_neuron_connectivity)-[r:synapsed_to]->(b:Neuron:has_neuron_connectivity)-[:database_cross_reference]->(:Connectome {short_form:\"%s\"}) WHERE r.weight IS NOT NULL RETURN id(a) AS source, id(b) AS target, 5000 - r.weight[0] AS weight_p, r.weight[0] AS weight') YIELD graphName, nodeCount, relationshipCount RETURN graphName, nodeCount, relationshipCount;\n" \
+    "$G" "$SF" "$SF" "$SF" | $CYPHER || exit 1
 done
 
 echo "[gds] done. Catalog:"

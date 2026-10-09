@@ -28,8 +28,6 @@ jobs:
         with:
           images: virtualflybrain/docker-vfb-neo4j-productiondb
 
-      - uses: docker/setup-buildx-action@v3
-
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:

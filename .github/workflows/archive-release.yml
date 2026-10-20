@@ -49,7 +49,7 @@ name: Archive release to Zenodo
 # before compression, so `gunzip -c owlery-live.owl.gz | sha256sum` reproduces it.
 # The PDB tarball is already gzip and is deposited unchanged.
 #
-# Files over PART_BYTES (1 GiB) go up as numbered parts (`VFB-PDB-v4.tar.gz.part-000`,
+# Files over PART_BYTES (256 MiB) go up as numbered parts (`VFB-PDB-v4.tar.gz.part-000`,
 # `-001`, ...): Zenodo's upload endpoint does not survive one multi-GB PUT reliably,
 # and a failed part is retried on its own. The manifest lists every part with its
 # own SHA-256 and the command that rebuilds the file:
@@ -89,13 +89,13 @@ jobs:
     runs-on: ubuntu-latest
     # 12.2 GB down, ~5.8 GB up. Peak disk is owlery-live.owl plus its gzip,
     # ~6.8 GB; files are handled one at a time and deleted after upload.
-    timeout-minutes: 240
+    timeout-minutes: 480
     env:
       OWL_URL: http://VirtualFlyBrain.org/data/VFB/OWL/owlery-live.owl
       PDB_URL: http://data.virtualflybrain.org/archive/VFB-PDB-v4.tar.gz
       ZENODO_API: https://zenodo.org/api
       # files larger than this are deposited as numbered parts (see the upload step)
-      PART_BYTES: "1073741824"
+      PART_BYTES: "268435456"
 
     steps:
       - uses: actions/checkout@v4
@@ -278,13 +278,13 @@ jobs:
               else
                 # whole-part retries: curl's own --retry re-sends the part from the start
                 ok=0
-                for attempt in 1 2 3 4 5; do
+                for attempt in 1 2 3 4 5 6; do
                   if curl -fsS -T "$p" -H "Authorization: Bearer $TOKEN" "$BUCKET/$p" \
-                       -o /dev/null --max-time 3600; then ok=1; break; fi
+                       -o /dev/null --max-time 1200; then ok=1; break; fi
                   echo "::warning::upload of $p failed (attempt $attempt) — retrying in $(( attempt * 60 )) s"
                   sleep $(( attempt * 60 ))
                 done
-                [ "$ok" = 1 ] || { echo "::error::could not upload $p after 5 attempts"; exit 1; }
+                [ "$ok" = 1 ] || { echo "::error::could not upload $p after 6 attempts"; exit 1; }
                 echo "uploaded $p ($(stat -c%s "$p") bytes)"
               fi
               rm -f "$p"
@@ -318,7 +318,7 @@ jobs:
           (<code>VFB-PDB-v4.tar.gz</code>, the backup restored by <code>loadDB.sh</code> in
           <code>virtualflybrain/docker-vfb-neo4j-productiondb:$TAG</code>) and the reasoner input
           (<code>owlery-live.owl</code>, loaded by <code>virtualflybrain/owlery-vfb</code>, deposited
-          gzipped). Files over 1 GiB are split into numbered parts; rebuild one with
+          gzipped). Files over 256 MiB are split into numbered parts; rebuild one with
           <code>cat VFB-PDB-v4.tar.gz.part-* &gt; VFB-PDB-v4.tar.gz</code>. SHA-256 checksums of both
           files as served, and of every part, are in <code>manifest.txt</code>.</p>
           <p>The production database is deposited whole rather than as OWL because it cannot be
